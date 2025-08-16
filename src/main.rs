@@ -1,180 +1,159 @@
 use anyhow::{Context, Result};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use scraper::{Html, Selector};
-use std::path::Path;
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
 use tokio::task::JoinSet;
 use tokio::time::{Duration, sleep};
-use tokio_stream::StreamExt;
-const MAX_CONCURRENT_TASKS: usize = 20;
-#[tokio::main]
-async fn main() -> Result<()> {
-    let mut rdr = csv_async::AsyncReader::from_reader(
-        File::open("./out/links.csv")
+
+mod csv_reader;
+mod file_manager;
+mod progress;
+mod types;
+mod web_scraper;
+
+use csv_reader::CsvReader;
+use file_manager::FileManager;
+use progress::ProgressManager;
+use types::{Config, ScrapingStats};
+use web_scraper::WebScraper;
+
+struct ScrapperApp {
+    config: Config,
+    csv_reader: CsvReader,
+    file_manager: FileManager,
+}
+
+impl ScrapperApp {
+    fn new() -> Result<Self> {
+        let config = Config::default();
+
+        let csv_reader = CsvReader::new(&config.input_file);
+        let file_manager = FileManager::new(&config.output_dir);
+
+        Ok(Self {
+            config,
+            csv_reader,
+            file_manager,
+        })
+    }
+
+    async fn run(&self) -> Result<()> {
+        // Ensure output directory exists
+        self.file_manager.ensure_output_dir_exists().await?;
+
+        // Count total records and existing files
+        let initial_stats = self
+            .csv_reader
+            .count_records_and_existing(self.file_manager.output_dir())
             .await
-            .context("Failed to open links.csv")?,
-    );
-    let mut records = rdr.records();
-    let mut total = 0;
-    let mut existing = 0;
+            .context("Failed to count records and existing files")?;
 
-    while let Some(record) = records.next().await {
-        let record = record.context("Failed to read CSV record while counting")?;
-        total += 1;
+        let records_to_process = initial_stats.records_to_process();
+        if records_to_process == 0 {
+            println!("All files already exist. Nothing to process.");
+            return Ok(());
+        }
 
-        if let Some(chapn) = record.get(1) {
-            let file_name = format!("./out/chapter_{chapn}.txt");
-            if Path::new(&file_name).exists() {
-                existing += 1;
+        // Initialize progress tracking
+        let progress = ProgressManager::new(records_to_process as u64)
+            .context("Failed to initialize progress manager")?;
+
+        // Read all records
+        let records = self
+            .csv_reader
+            .read_records()
+            .await
+            .context("Failed to read CSV records")?;
+
+        // Process records concurrently
+        self.process_records(records, initial_stats, &progress)
+            .await
+    }
+
+    async fn process_records(
+        &self,
+        records: Vec<types::ChapterRecord>,
+        mut stats: ScrapingStats,
+        progress: &ProgressManager,
+    ) -> Result<()> {
+        let mut join_set = JoinSet::new();
+        let stats_pb = progress.get_stats_pb();
+
+        for record in records {
+            // Skip existing files
+            if self.file_manager.chapter_exists(&record) {
+                progress.log_skip(&record.file_name());
+                continue;
             }
-        }
-    }
-    let records_to_process = total - existing;
-    if records_to_process == 0 {
-        println!("All files already exist. Nothing to process.");
-        return Ok(());
-    }
-    let multi_progress = MultiProgress::new();
-    let main_pb = multi_progress.add(ProgressBar::new(records_to_process as u64));
-    main_pb.set_style(
-        ProgressStyle::default_bar()
-            .template(
-                "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})",
-            )?
-            .progress_chars("#>-"),
-    );
-    main_pb.set_message("Processing chapters");
 
-    // Stats progress bar for showing current activity
-    let stats_pb = multi_progress.add(ProgressBar::new_spinner());
-    stats_pb.set_style(ProgressStyle::default_spinner().template("{spinner:.blue} {msg}")?);
-    stats_pb.enable_steady_tick(Duration::from_millis(100));
-
-    // Active tasks counter
-    let active_pb = multi_progress.add(ProgressBar::new_spinner());
-    active_pb.set_style(ProgressStyle::default_spinner().template("🔄 Active: {msg}")?);
-    active_pb.enable_steady_tick(Duration::from_millis(200));
-    let mut rdr = csv_async::AsyncReader::from_reader(
-        File::open("./out/links.csv")
-            .await
-            .context("Failed to open links.csv")?,
-    );
-    let mut records = rdr.records();
-
-    let mut set = JoinSet::new();
-    let mut success_count = 0;
-    let mut error_count = 0;
-    while let Some(record) = records.next().await {
-        let record = record.context("Failed to read CSV record")?;
-        let chapn = record
-            .get(1)
-            .context("Missing chapter number column in CSV")?;
-        let link = record
-            .get(0)
-            .context("Missing link column in CSV")?
-            .to_string();
-        let file_name = format!("./out/chapter_{chapn}.txt");
-        if Path::new(&file_name).exists() {
-            stats_pb.println(format!("Skipping existing file: {file_name}"));
-            continue;
-        }
-        if set.len() >= MAX_CONCURRENT_TASKS {
-            if let Some(result) = set.join_next().await {
-                match result {
-                    Ok(Ok(_)) => {
-                        success_count += 1;
-                        main_pb.inc(1);
-                    }
-                    Ok(Err(e)) => {
-                        error_count += 1;
-                        stats_pb.println(format!("❌ Error: {e}"));
-                        main_pb.inc(1);
-                    }
-                    Err(e) => {
-                        error_count += 1;
-                        stats_pb.println(format!("❌ Task panicked: {e}"));
-                        main_pb.inc(1);
-                    }
+            // Wait if we've reached the maximum concurrent tasks
+            if join_set.len() >= self.config.max_concurrent_tasks {
+                if let Some(result) = join_set.join_next().await {
+                    self.handle_task_result(result, &mut stats, progress);
                 }
             }
+
+            // Update progress displays
+            progress.update_active_tasks(join_set.len());
+            progress.update_stats_with_queue(&stats, join_set.len());
+
+            // Clone data needed for the async task
+            let output_dir = self.file_manager.output_dir().to_path_buf();
+            let stats_pb_clone = stats_pb.clone();
+            let config_clone = self.config.clone();
+
+            join_set.spawn(async move {
+                let scraper = WebScraper::new(&config_clone)?;
+                scraper
+                    .scrape_chapter(&record, &output_dir, Some(&stats_pb_clone))
+                    .await
+            });
+
+            // Rate limiting delay
+            sleep(Duration::from_millis(self.config.task_delay_ms)).await;
         }
-        active_pb.set_message(format!("{} tasks", set.len()));
-        stats_pb.set_message(format!(
-            "✅ {} success, ❌ {} errors, 📥 {} queued",
-            success_count,
-            error_count,
-            set.len()
-        ));
-        let stats_pb_clone = stats_pb.clone();
-        set.spawn(async move { scrape(link, file_name, stats_pb_clone).await });
-        sleep(Duration::from_millis(100)).await;
+
+        // Wait for all remaining tasks to complete
+        while let Some(result) = join_set.join_next().await {
+            self.handle_task_result(result, &mut stats, progress);
+
+            // Update progress displays
+            progress.update_active_tasks(join_set.len());
+            progress.update_stats_with_remaining(&stats, join_set.len());
+        }
+
+        // Finish progress display
+        progress.finish(&stats);
+
+        Ok(())
     }
-    while let Some(result) = set.join_next().await {
+
+    fn handle_task_result(
+        &self,
+        result: Result<Result<()>, tokio::task::JoinError>,
+        stats: &mut ScrapingStats,
+        progress: &ProgressManager,
+    ) {
         match result {
-            Ok(Ok(_)) => {
-                success_count += 1;
-                main_pb.inc(1);
+            Ok(Ok(())) => {
+                stats.increment_success();
+                progress.increment_progress();
             }
             Ok(Err(e)) => {
-                error_count += 1;
-                stats_pb.println(format!("❌ Error: {e}"));
-                main_pb.inc(1);
+                stats.increment_error();
+                progress.log_error(&e);
+                progress.increment_progress();
             }
             Err(e) => {
-                error_count += 1;
-                stats_pb.println(format!("❌ Task panicked: {e}"));
-                main_pb.inc(1);
+                stats.increment_error();
+                progress.log_panic(&e);
+                progress.increment_progress();
             }
         }
-
-        // Update counters
-        active_pb.set_message(format!("{} tasks", set.len()));
-        stats_pb.set_message(format!(
-            "✅ {} success, ❌ {} errors, 📥 {} remaining",
-            success_count,
-            error_count,
-            set.len()
-        ));
     }
-    main_pb.finish_with_message("✨ All chapters processed!");
-    stats_pb.finish_with_message(format!(
-        "Final: ✅ {success_count} success, ❌ {error_count} errors"
-    ));
-    active_pb.finish_and_clear();
+}
 
-    println!("\n🎉 Scraping completed! {success_count} successful, {error_count} errors");
+#[tokio::main]
+async fn main() -> Result<()> {
+    let app = ScrapperApp::new().context("Failed to initialize application")?;
+    app.run().await.context("Application failed to run")?;
     Ok(())
 }
 
-async fn scrape(link: String, file_name: String, stats_pb: ProgressBar) -> Result<()> {
-    let chapter_name = file_name
-        .strip_prefix("./out/chapter_")
-        .and_then(|s| s.strip_suffix(".txt"))
-        .unwrap_or("unknown");
-
-    stats_pb.println(format!("🔄 Starting chapter {chapter_name}: {link}"));
-    let resp = reqwest::get(&link).await?.text().await?;
-    stats_pb.println(format!("parssing {link}"));
-    let mut out = String::new();
-    {
-        let html = Html::parse_document(&resp);
-        let selector = Selector::parse(".content-inner").unwrap();
-        for node in html.select(&selector).next().unwrap().text().skip(5) {
-            if !node.starts_with("window.pubfuturetag") {
-                out.push_str(node);
-            }
-            out.push('\n')
-        }
-    }
-
-    stats_pb.println(format!("saving file {file_name}"));
-    let mut file = File::create(&file_name)
-        .await
-        .with_context(|| format!("Failed to create file: {file_name}"))?;
-    file.write_all(out.as_bytes())
-        .await
-        .context("Failed to write content to file")?;
-    stats_pb.println(format!("✅ Completed chapter {chapter_name}"));
-    Ok::<_, anyhow::Error>(())
-}
