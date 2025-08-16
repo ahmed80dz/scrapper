@@ -1,0 +1,25 @@
+refactor: separate concerns into focused modules
+
+- Break monolithic main.rs into 6 specialized modules
+- Add types.rs for shared data structures and configuration
+- Create csv_reader.rs for CSV parsing logic
+- Add web_scraper.rs for content extraction (renamed from scraper.rs)
+- Implement progress.rs for progress tracking and user feedback
+- Add file_manager.rs for file system operations
+- Maintain all original functionality with improved maintainability
+- Fix async lifetime issues and module naming conflicts
+- Remove unused code to eliminate compiler warnings
+# Please enter the commit message for your changes. Lines starting
+# with '#' will be ignored, and an empty message aborts the commit.
+#
+# On branch main
+# Your branch is up to date with 'origin/main'.
+#
+# Changes to be committed:
+#	new file:   src/csv_reader.rs
+#	new file:   src/file_manager.rs
+#	modified:   src/main.rs
+#	new file:   src/progress.rs
+#	new file:   src/types.rs
+#	new file:   src/web_scraper.rs
+#
