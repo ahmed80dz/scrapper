@@ -118,4 +118,10 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Contributing
 
-[Add contribution guidelines here]
+
+We welcome contributions to improve Scrapper! Here's how you can help:
+Getting Started
+
+Fork the repository on GitHub
+Clone your fork locally:
+
