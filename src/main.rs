@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, sleep};
 
+mod config;
 mod csv_reader;
 mod file_manager;
 mod progress;
@@ -21,8 +22,27 @@ struct ScrapperApp {
 }
 
 impl ScrapperApp {
-    fn new() -> Result<Self> {
-        let config = Config::default();
+    async fn new() -> Result<Self> {
+        // Check if we should generate a config file and exit
+        if config::handle_config_generation().await? {
+            std::process::exit(0);
+        }
+
+        // Load configuration from args/file
+        let config = Config::from_args()
+            .await
+            .context("Failed to load configuration")?;
+
+        if config.verbose {
+            println!("🔧 Configuration loaded:");
+            println!("   Input file: {:?}", config.input_file);
+            println!("   Output directory: {:?}", config.output_dir);
+            println!("   CSS selector: {}", config.selector);
+            println!("   Max concurrent tasks: {}", config.max_concurrent_tasks);
+            println!("   Task delay: {}ms", config.task_delay_ms);
+            println!("   Request timeout: {}s", config.request_timeout_secs);
+            println!();
+        }
 
         let csv_reader = CsvReader::new(&config.input_file);
         let file_manager = FileManager::new(&config.output_dir);
@@ -152,7 +172,9 @@ impl ScrapperApp {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let app = ScrapperApp::new().context("Failed to initialize application")?;
+    let app = ScrapperApp::new()
+        .await
+        .context("Failed to initialize application")?;
     app.run().await.context("Application failed to run")?;
     Ok(())
 }
