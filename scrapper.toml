@@ -1,0 +1,58 @@
+# Scrapper Configuration File
+# Copy this file to scrapper.toml and modify as needed
+
+# Maximum number of concurrent scraping tasks (1-50)
+# Recommended: 5-10 for most sites, 15-25 for robust servers
+# Lower values = more respectful to servers, higher values = faster scraping
+max_concurrent_tasks = 8
+
+# Delay between spawning tasks (milliseconds, minimum 50ms)
+# Recommended: 200-500ms for public sites, 100-200ms for robust APIs
+# Higher values = more respectful, less likely to be rate-limited
+task_delay_ms = 250
+
+# Path to input CSV file containing URLs and chapter numbers
+# Format: url,chapter_number (header row optional)
+input_file = "./out/links.csv"
+
+# Output directory for scraped text files
+# Files will be named: chapter_{number}.txt
+output_dir = "./out_2"
+
+# CSS selector for content extraction
+# Multiple selectors separated by commas (tries each until one matches)
+# Common selectors: "main", "article", ".content", ".post-content"
+selector = "main, article, .content, .post-content, .entry-content, #content"
+
+# Number of initial text nodes to skip when extracting content
+# Useful for skipping navigation, breadcrumbs, author info, etc.
+# Most sites: 1-3, complex layouts: 3-5
+skip_text_nodes = 2
+
+# Text patterns to filter out from extracted content
+# Add any unwanted text that appears in scraped content
+filter_patterns = [
+    "window.",              # JavaScript code
+    "document.",            # JavaScript DOM manipulation
+    "function(",            # JavaScript functions
+    "Advertisement",        # Ad content
+    "Subscribe",           # Newsletter prompts
+    "Cookie",              # Cookie notices
+    "Privacy Policy",      # Legal links
+    "Terms of Service",    # Legal links
+    "Sign up",            # Registration prompts
+    "Log in"              # Login prompts
+]
+
+# HTTP request timeout in seconds (5-300)
+# Recommended: 30-60s for most content, 60-120s for media-heavy pages
+request_timeout_secs = 45
+
+# User agent string for HTTP requests
+# Use a realistic browser user agent to avoid blocking
+# This one mimics Chrome on Windows 10
+user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+# Enable verbose output for debugging
+# Shows detailed progress, configuration, and error information
+verbose = false
