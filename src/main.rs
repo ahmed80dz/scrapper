@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
         total += 1;
 
         if let Some(chapn) = record.get(1) {
-            let file_name = format!("./out/chapter_{}.txt", chapn);
+            let file_name = format!("./out/chapter_{chapn}.txt");
             if Path::new(&file_name).exists() {
                 existing += 1;
             }
@@ -74,9 +74,9 @@ async fn main() -> Result<()> {
             .get(0)
             .context("Missing link column in CSV")?
             .to_string();
-        let file_name = format!("./out/chapter_{}.txt", chapn);
+        let file_name = format!("./out/chapter_{chapn}.txt");
         if Path::new(&file_name).exists() {
-            stats_pb.println(format!("Skipping existing file: {}", file_name));
+            stats_pb.println(format!("Skipping existing file: {file_name}"));
             continue;
         }
         if set.len() >= MAX_CONCURRENT_TASKS {
@@ -88,12 +88,12 @@ async fn main() -> Result<()> {
                     }
                     Ok(Err(e)) => {
                         error_count += 1;
-                        stats_pb.println(format!("❌ Error: {}", e));
+                        stats_pb.println(format!("❌ Error: {e}"));
                         main_pb.inc(1);
                     }
                     Err(e) => {
                         error_count += 1;
-                        stats_pb.println(format!("❌ Task panicked: {}", e));
+                        stats_pb.println(format!("❌ Task panicked: {e}"));
                         main_pb.inc(1);
                     }
                 }
@@ -118,12 +118,12 @@ async fn main() -> Result<()> {
             }
             Ok(Err(e)) => {
                 error_count += 1;
-                stats_pb.println(format!("❌ Error: {}", e));
+                stats_pb.println(format!("❌ Error: {e}"));
                 main_pb.inc(1);
             }
             Err(e) => {
                 error_count += 1;
-                stats_pb.println(format!("❌ Task panicked: {}", e));
+                stats_pb.println(format!("❌ Task panicked: {e}"));
                 main_pb.inc(1);
             }
         }
@@ -139,15 +139,11 @@ async fn main() -> Result<()> {
     }
     main_pb.finish_with_message("✨ All chapters processed!");
     stats_pb.finish_with_message(format!(
-        "Final: ✅ {} success, ❌ {} errors",
-        success_count, error_count
+        "Final: ✅ {success_count} success, ❌ {error_count} errors"
     ));
     active_pb.finish_and_clear();
 
-    println!(
-        "\n🎉 Scraping completed! {} successful, {} errors",
-        success_count, error_count
-    );
+    println!("\n🎉 Scraping completed! {success_count} successful, {error_count} errors");
     Ok(())
 }
 
@@ -157,9 +153,9 @@ async fn scrape(link: String, file_name: String, stats_pb: ProgressBar) -> Resul
         .and_then(|s| s.strip_suffix(".txt"))
         .unwrap_or("unknown");
 
-    stats_pb.println(format!("🔄 Starting chapter {}: {}", chapter_name, link));
+    stats_pb.println(format!("🔄 Starting chapter {chapter_name}: {link}"));
     let resp = reqwest::get(&link).await?.text().await?;
-    stats_pb.println(format!("parssing {}", link));
+    stats_pb.println(format!("parssing {link}"));
     let mut out = String::new();
     {
         let html = Html::parse_document(&resp);
@@ -172,13 +168,13 @@ async fn scrape(link: String, file_name: String, stats_pb: ProgressBar) -> Resul
         }
     }
 
-    stats_pb.println(format!("saving file {}", file_name));
+    stats_pb.println(format!("saving file {file_name}"));
     let mut file = File::create(&file_name)
         .await
-        .with_context(|| format!("Failed to create file: {}", file_name))?;
+        .with_context(|| format!("Failed to create file: {file_name}"))?;
     file.write_all(out.as_bytes())
         .await
         .context("Failed to write content to file")?;
-    stats_pb.println(format!("✅ Completed chapter {}", chapter_name));
+    stats_pb.println(format!("✅ Completed chapter {chapter_name}"));
     Ok::<_, anyhow::Error>(())
 }
