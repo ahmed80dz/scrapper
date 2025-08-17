@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use crate::error::{ScrapperError, ScrapperResult};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
@@ -85,32 +85,38 @@ impl Default for ScrapingConfig {
 
 impl ScrapingConfig {
     /// Load configuration from a TOML file
-    pub async fn from_file<P: Into<PathBuf>>(path: P) -> Result<Self> {
+    pub async fn from_file<P: Into<PathBuf>>(path: P) -> ScrapperResult<Self> {
         let path = path.into();
+        
         let contents = fs::read_to_string(&path)
             .await
-            .with_context(|| format!("Failed to read config file: {:?}", path))?;
+            .map_err(|e| ScrapperError::file_system(
+                format!("Failed to read config file: {e}"),
+                Some(path.clone())
+            ))?;
         
-        let config: Self = toml::from_str(&contents)
-            .with_context(|| format!("Failed to parse config file: {:?}", path))?;
+        let config: Self = toml::from_str(&contents)?; // Auto-converts from toml::de::Error
         
         config.validate()?;
         Ok(config)
     }
 
     /// Load configuration from command line arguments, with optional config file override
-    pub async fn from_args() -> Result<Self> {
+    pub async fn from_args() -> ScrapperResult<Self> {
         use clap::Parser;
         
         let args = Args::parse();
         
         // Start with default config
         let mut config = if let Some(config_path) = &args.config {
-            Self::from_file(config_path).await.unwrap_or_else(|e| {
-                eprintln!("Warning: Failed to load config file: {}", e);
-                eprintln!("Using default configuration");
-                Self::default()
-            })
+            match Self::from_file(config_path).await {
+                Ok(config) => config,
+                Err(e) => {
+                    eprintln!("Warning: {}", e.user_friendly_message());
+                    eprintln!("Using default configuration");
+                    Self::default()
+                }
+            }
         } else {
             Self::default()
         };
@@ -140,45 +146,67 @@ impl ScrapingConfig {
     }
 
     /// Save current configuration to a TOML file
-    pub async fn save_to_file<P: Into<PathBuf>>(&self, path: P) -> Result<()> {
+    pub async fn save_to_file<P: Into<PathBuf>>(&self, path: P) -> ScrapperResult<()> {
         let path = path.into();
+        
         let toml_string = toml::to_string_pretty(self)
-            .context("Failed to serialize configuration")?;
+            .map_err(|e| ScrapperError::config(format!("Failed to serialize configuration: {e}")))?;
         
         fs::write(&path, toml_string)
             .await
-            .with_context(|| format!("Failed to write config file: {:?}", path))?;
+            .map_err(|e| ScrapperError::file_system(
+                format!("Failed to write config file: {e}"),
+                Some(path.clone())
+            ))?;
         
         Ok(())
     }
 
     /// Validate configuration values
-    pub fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> ScrapperResult<()> {
         if self.max_concurrent_tasks == 0 {
-            anyhow::bail!("max_concurrent_tasks must be greater than 0");
+            return Err(ScrapperError::validation(
+                "max_concurrent_tasks",
+                "must be greater than 0"
+            ));
         }
         
         // Reduced max from 100 to 50 for better server etiquette
         if self.max_concurrent_tasks > 50 {
-            anyhow::bail!("max_concurrent_tasks should not exceed 50 to be respectful to servers");
+            return Err(ScrapperError::validation(
+                "max_concurrent_tasks",
+                "should not exceed 50 to be respectful to servers"
+            ));
         }
         
         // Add minimum delay validation
         if self.task_delay_ms < 50 {
-            anyhow::bail!("task_delay_ms should be at least 50ms to avoid overwhelming servers");
+            return Err(ScrapperError::validation(
+                "task_delay_ms",
+                "should be at least 50ms to avoid overwhelming servers"
+            ));
         }
         
         if self.selector.trim().is_empty() {
-            anyhow::bail!("selector cannot be empty");
+            return Err(ScrapperError::validation(
+                "selector",
+                "cannot be empty"
+            ));
         }
         
         if self.request_timeout_secs == 0 {
-            anyhow::bail!("request_timeout_secs must be greater than 0");
+            return Err(ScrapperError::validation(
+                "request_timeout_secs",
+                "must be greater than 0"
+            ));
         }
         
         // Add reasonable timeout limits
         if self.request_timeout_secs > 300 {
-            anyhow::bail!("request_timeout_secs should not exceed 300 seconds (5 minutes)");
+            return Err(ScrapperError::validation(
+                "request_timeout_secs",
+                "should not exceed 300 seconds (5 minutes)"
+            ));
         }
 
         // Validate file paths exist for input
@@ -190,7 +218,7 @@ impl ScrapingConfig {
     }
 
     /// Create a sample configuration file
-    pub async fn create_sample_config<P: Into<PathBuf>>(path: P) -> Result<()> {
+    pub async fn create_sample_config<P: Into<PathBuf>>(path: P) -> ScrapperResult<()> {
         let config = Self::default();
         config.save_to_file(path).await
     }
@@ -232,15 +260,15 @@ struct Args {
     generate_config: Option<PathBuf>,
 }
 
-pub async fn handle_config_generation() -> Result<bool> {
+pub async fn handle_config_generation() -> ScrapperResult<bool> {
     use clap::Parser;
     
     let args = Args::parse();
     
     if let Some(config_path) = args.generate_config {
         ScrapingConfig::create_sample_config(&config_path).await?;
-        println!("✅ Sample configuration created at: {:?}", config_path);
-        println!("💡 Edit the file and run with: cargo run -- --config {:?}", config_path);
+        println!("✅ Sample configuration created at: {config_path:?}");
+        println!("💡 Edit the file and run with: cargo run -- --config {config_path:?}");
         return Ok(true); // Indicates we should exit after generating config
     }
     
