@@ -1,4 +1,3 @@
-use tokio::task::JoinSet;
 use tokio::time::{Duration, sleep};
 
 mod config;
@@ -135,7 +134,7 @@ impl ScrapperApp {
         mut stats: ScrapingStats,
         progress: &ProgressManager,
     ) -> ScrapperResult<()> {
-        let mut tasks = task_manager::TaskManager::new(self.config.max_concurrent_tasks);
+        let mut tasks = TaskManager::new(self.config.max_concurrent_tasks);
         let stats_pb = progress.get_stats_pb();
 
         // Track retry attempts for recoverable errors
