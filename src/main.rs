@@ -6,9 +6,9 @@ mod csv_reader;
 mod error;
 mod file_manager;
 mod progress;
+mod task_manager;
 mod types;
 mod web_scraper;
-
 use csv_reader::CsvReader;
 use error::{ScrapperError, ScrapperResult};
 use file_manager::FileManager;
@@ -135,6 +135,7 @@ impl ScrapperApp {
         progress: &ProgressManager,
     ) -> ScrapperResult<()> {
         let mut join_set = JoinSet::new();
+        // let mut tasks = task_manager::TaskManager::new(self.config.max_concurrent_tasks);
         let stats_pb = progress.get_stats_pb();
 
         // Track retry attempts for recoverable errors
@@ -171,7 +172,17 @@ impl ScrapperApp {
                     .scrape_chapter(&record_clone, &output_dir, Some(&stats_pb_clone))
                     .await
             });
-
+            // if let Some(result) = tasks
+            //     .spawn_or_wait(|| async move {
+            //         let scraper = WebScraper::new(&config_clone)?;
+            //         scraper
+            //             .scrape_chapter(&record_clone, &output_dir, Some(&stats_pb_clone))
+            //             .await
+            //     })
+            //     .await
+            // {
+            //     self.handle_task_result(result, &mut stats, progress);
+            // }
             // Rate limiting delay
             sleep(Duration::from_millis(self.config.task_delay_ms)).await;
         }
@@ -355,4 +366,3 @@ async fn main() -> ScrapperResult<()> {
         }
     }
 }
-
