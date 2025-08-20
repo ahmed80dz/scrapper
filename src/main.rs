@@ -13,6 +13,7 @@ use csv_reader::CsvReader;
 use error::{ScrapperError, ScrapperResult};
 use file_manager::FileManager;
 use progress::ProgressManager;
+use task_manager::TaskManager;
 use types::{Config, ScrapingStats};
 use web_scraper::WebScraper;
 
@@ -134,8 +135,7 @@ impl ScrapperApp {
         mut stats: ScrapingStats,
         progress: &ProgressManager,
     ) -> ScrapperResult<()> {
-        let mut join_set = JoinSet::new();
-        // let mut tasks = task_manager::TaskManager::new(self.config.max_concurrent_tasks);
+        let mut tasks = task_manager::TaskManager::new(self.config.max_concurrent_tasks);
         let stats_pb = progress.get_stats_pb();
 
         // Track retry attempts for recoverable errors
@@ -149,39 +149,39 @@ impl ScrapperApp {
                 continue;
             }
 
-            // Wait if we've reached the maximum concurrent tasks
-            if join_set.len() >= self.config.max_concurrent_tasks {
-                if let Some(result) = join_set.join_next().await {
-                    self.handle_task_result(result, &mut stats, progress); //, &mut retry_queue);
-                }
+            // Clone data needed for the async task
+            if let Some(result) = tasks
+                .spawn_or_wait(|| {
+                    let output_dir = self.file_manager.output_dir().to_path_buf();
+                    let stats_pb_clone = stats_pb.clone();
+                    let config_clone = self.config.clone();
+                    let record_clone = record.clone();
+
+                    async move {
+                        let scraper = WebScraper::new(&config_clone)?;
+                        scraper
+                            .scrape_chapter(&record_clone, &output_dir, Some(&stats_pb_clone))
+                            .await
+                    }
+                })
+                .await
+            {
+                self.handle_task_result(Ok(result), &mut stats, progress);
             }
 
             // Update progress displays
-            progress.update_active_tasks(join_set.len());
-            progress.update_stats_with_queue(&stats, join_set.len());
-
-            // Clone data needed for the async task
-            let output_dir = self.file_manager.output_dir().to_path_buf();
-            let stats_pb_clone = stats_pb.clone();
-            let config_clone = self.config.clone();
-            let record_clone = record.clone();
-
-            join_set.spawn(async move {
-                let scraper = WebScraper::new(&config_clone)?;
-                scraper
-                    .scrape_chapter(&record_clone, &output_dir, Some(&stats_pb_clone))
-                    .await
-            });
+            progress.update_active_tasks(tasks.len());
+            progress.update_stats_with_queue(&stats, tasks.len());
             sleep(Duration::from_millis(self.config.task_delay_ms)).await;
         }
-
         // Wait for all remaining tasks to complete
-        while let Some(result) = join_set.join_next().await {
-            self.handle_task_result(result, &mut stats, progress); //, &mut retry_queue);
+        let remaining_results = tasks.join_all().await;
+        for result in remaining_results {
+            self.handle_task_result(Ok(result), &mut stats, progress);
 
             // Update progress displays
-            progress.update_active_tasks(join_set.len());
-            progress.update_stats_with_remaining(&stats, join_set.len());
+            progress.update_active_tasks(tasks.len());
+            progress.update_stats_with_remaining(&stats, tasks.len());
         }
 
         // Process retry queue for recoverable errors
