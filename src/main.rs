@@ -172,18 +172,6 @@ impl ScrapperApp {
                     .scrape_chapter(&record_clone, &output_dir, Some(&stats_pb_clone))
                     .await
             });
-            // if let Some(result) = tasks
-            //     .spawn_or_wait(|| async move {
-            //         let scraper = WebScraper::new(&config_clone)?;
-            //         scraper
-            //             .scrape_chapter(&record_clone, &output_dir, Some(&stats_pb_clone))
-            //             .await
-            //     })
-            //     .await
-            // {
-            //     self.handle_task_result(result, &mut stats, progress);
-            // }
-            // Rate limiting delay
             sleep(Duration::from_millis(self.config.task_delay_ms)).await;
         }
 
